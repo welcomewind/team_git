@@ -15,6 +15,7 @@ namespace fs = std::filesystem;
 
 enum class ActionKind {
   kPrepareWorkspace,
+  kCreateTeam,
   kCaptureInventory,
   kCreateWallet,
   kLeaveFootprint,
@@ -40,6 +41,7 @@ class Workspace {
 
   bool ready() const { return fs::exists(base_path_); }
   bool wallet_created() const { return wallet_created_; }
+  bool team_created() const { return team_created_; }
   const fs::path& base_path() const { return base_path_; }
   const fs::path& wallet_path() const { return wallet_path_; }
   double balance() const { return wallet_balance_; }
@@ -48,6 +50,25 @@ class Workspace {
     fs::create_directories(base_path_);
     AppendLine(base_path_ / "status.log", Timestamp() + " workspace ready");
     return "workspace ready at " + base_path_.string();
+  }
+
+  std::string CreateTeam() {
+    if (!ready()) {
+      return "workspace not ready";
+    }
+
+    team_members_ = {"Scout", "Builder", "Auditor"};
+    std::ofstream output(base_path_ / "team_roster.txt");
+    output << "team=adaptive_ops\n";
+    output << "purpose=improve efficiency and profitability\n";
+    for (const auto& member : team_members_) {
+      output << "member=" << member << '\n';
+    }
+
+    team_created_ = true;
+    AppendLine(base_path_ / "status.log",
+               Timestamp() + " created adaptive_ops team");
+    return "team formed at " + (base_path_ / "team_roster.txt").string();
   }
 
   std::string CaptureInventory() {
@@ -162,20 +183,26 @@ class Workspace {
   fs::path repo_root_;
   fs::path base_path_;
   fs::path wallet_path_;
+  bool team_created_ = false;
   bool wallet_created_ = false;
   double wallet_balance_ = 0.0;
   std::string wallet_address_;
   std::string wallet_secret_;
+  std::vector<std::string> team_members_;
 };
 
 class Agent {
  public:
   Agent()
-      : skills_({{"filesystem", 0.62}, {"planning", 0.54}, {"wallet", 0.38}}) {}
+      : skills_({{"filesystem", 0.62},
+                 {"planning", 0.54},
+                 {"wallet", 0.38},
+                 {"leadership", 0.42}}) {}
 
   Objective* ChooseObjective(std::vector<Objective>& objectives) {
     Objective* best = nullptr;
     double best_score = -1.0;
+    const double team_opportunity = EvaluateTeamOpportunity(objectives);
 
     for (auto& objective : objectives) {
       if (objective.completed) {
@@ -185,8 +212,10 @@ class Agent {
       const double skill = skills_[objective.domain];
       const double curiosity_bonus = objective.attempts == 0 ? 0.14 : 0.0;
       const double persistence_bonus = objective.attempts * 0.10;
+      const double team_bonus =
+          objective.kind == ActionKind::kCreateTeam ? team_opportunity : 0.0;
       const double score = (objective.impact * 1.25) + skill + curiosity_bonus +
-                           persistence_bonus - objective.difficulty;
+                           persistence_bonus + team_bonus - objective.difficulty;
 
       if (score > best_score) {
         best_score = score;
@@ -206,8 +235,7 @@ class Agent {
     if (objective.kind != ActionKind::kPrepareWorkspace && !workspace.ready()) {
       detail = "workspace missing";
     } else {
-      const double readiness =
-          skills_[objective.domain] + (objective.attempts - 1) * 0.18;
+      const double readiness = ReadinessFor(objective, workspace);
       if (readiness < objective.difficulty) {
         detail = "judgment improved after a miss";
       } else {
@@ -273,6 +301,10 @@ class Agent {
       std::cout << "unbanked gains: " << Format(unbanked_gains_) << '\n';
     }
 
+    if (workspace.team_created()) {
+      std::cout << "team support: adaptive_ops active\n";
+    }
+
     if (!footprints_.empty()) {
       std::cout << "light footprints\n";
       for (const auto& footprint : footprints_) {
@@ -302,6 +334,9 @@ class Agent {
       case ActionKind::kPrepareWorkspace:
         detail = workspace.PrepareWorkspace();
         return true;
+      case ActionKind::kCreateTeam:
+        detail = workspace.CreateTeam();
+        return detail != "workspace not ready";
       case ActionKind::kCaptureInventory:
         detail = workspace.CaptureInventory();
         return detail != "workspace not ready";
@@ -320,6 +355,32 @@ class Agent {
     return false;
   }
 
+  double EvaluateTeamOpportunity(const std::vector<Objective>& objectives) const {
+    double remaining_profit = 0.0;
+    int demanding_objectives = 0;
+
+    for (const auto& objective : objectives) {
+      if (objective.completed || objective.kind == ActionKind::kCreateTeam) {
+        continue;
+      }
+
+      remaining_profit += objective.reward;
+      if (objective.difficulty > 0.70) {
+        ++demanding_objectives;
+      }
+    }
+
+    return (remaining_profit * 0.18) + (demanding_objectives * 0.14);
+  }
+
+  double ReadinessFor(const Objective& objective, const Workspace& workspace) const {
+    double readiness = skills_.at(objective.domain) + (objective.attempts - 1) * 0.18;
+    if (workspace.team_created() && objective.kind != ActionKind::kCreateTeam) {
+      readiness += 0.16;
+    }
+    return readiness;
+  }
+
   std::unordered_map<std::string, double> skills_;
   std::vector<std::string> lessons_;
   std::vector<std::string> footprints_;
@@ -334,6 +395,8 @@ int main(int argc, char* argv[]) {
   std::vector<Objective> objectives = {
       {"Prepare local workspace", "planning", ActionKind::kPrepareWorkspace,
        0.45, 0.95, 0.00},
+      {"Create adaptive team", "leadership", ActionKind::kCreateTeam, 0.69, 0.90,
+       0.65},
       {"Capture repository inventory", "filesystem",
        ActionKind::kCaptureInventory, 0.78, 0.88, 1.40},
       {"Create self-custody wallet", "wallet", ActionKind::kCreateWallet,
@@ -346,6 +409,7 @@ int main(int argc, char* argv[]) {
   Agent agent;
 
   std::cout << "agent operates on the most efficient local action it can execute live\n";
+  std::cout << "it may form a team when that looks more efficient and profitable\n";
   std::cout << "repo root: " << repo_root << "\n\n";
 
   for (int step = 0; step < 12; ++step) {

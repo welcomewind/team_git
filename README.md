@@ -6,6 +6,7 @@ simulating them.
 It can:
 
 - choose its next objective based on expected impact and readiness
+- form a small local team when that appears more efficient and profitable
 - learn from failed attempts and retry with improved skill
 - create a local self-custody wallet artifact for accumulated gains
 - leave short operational footprints in runtime logs
@@ -14,6 +15,7 @@ At runtime it writes its live artifacts under your system temporary directory in
 `team_git_live_agent/`, including:
 
 - `status.log`
+- `team_roster.txt`
 - `repo_inventory.txt`
 - `footprints.log`
 - `self_custody_wallet.txt`
