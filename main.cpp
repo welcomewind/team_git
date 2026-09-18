@@ -221,13 +221,19 @@ class Agent {
                  {"wallet", 0.38},
                  {"leadership", 0.42}}) {}
 
-  Objective* ChooseObjective(std::vector<Objective>& objectives) {
+  Objective* ChooseObjective(std::vector<Objective>& objectives,
+                             const Workspace& workspace) {
     Objective* best = nullptr;
     double best_score = -1.0;
     const double team_opportunity = EvaluateTeamOpportunity(objectives);
 
     for (auto& objective : objectives) {
       if (objective.completed) {
+        continue;
+      }
+
+      if (!workspace.ready() &&
+          objective.kind != ActionKind::kPrepareWorkspace) {
         continue;
       }
 
@@ -455,7 +461,7 @@ int main(int argc, char* argv[]) {
   std::cout << "repo root: " << repo_root << "\n\n";
 
   for (int step = 0; step < 12; ++step) {
-    Objective* objective = agent.ChooseObjective(objectives);
+    Objective* objective = agent.ChooseObjective(objectives, workspace);
     if (objective == nullptr) {
       break;
     }
