@@ -1,95 +1,276 @@
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <random>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
-struct Target {
+namespace fs = std::filesystem;
+
+enum class ActionKind {
+  kPrepareWorkspace,
+  kCaptureInventory,
+  kCreateWallet,
+  kLeaveFootprint,
+};
+
+struct Objective {
   std::string name;
   std::string domain;
+  ActionKind kind;
   double difficulty;
   double impact;
+  double reward;
   int attempts = 0;
   bool completed = false;
+};
+
+class Workspace {
+ public:
+  explicit Workspace(fs::path repo_root)
+      : repo_root_(std::move(repo_root)),
+        base_path_(fs::temp_directory_path() / "team_git_live_agent"),
+        wallet_path_(base_path_ / "self_custody_wallet.txt") {}
+
+  bool ready() const { return fs::exists(base_path_); }
+  bool wallet_created() const { return wallet_created_; }
+  const fs::path& base_path() const { return base_path_; }
+  const fs::path& wallet_path() const { return wallet_path_; }
+  double balance() const { return wallet_balance_; }
+
+  std::string PrepareWorkspace() {
+    fs::create_directories(base_path_);
+    AppendLine(base_path_ / "status.log", Timestamp() + " workspace ready");
+    return "workspace ready at " + base_path_.string();
+  }
+
+  std::string CaptureInventory() {
+    if (!ready()) {
+      return "workspace not ready";
+    }
+
+    std::vector<std::string> entries;
+    for (const auto& entry : fs::directory_iterator(repo_root_)) {
+      entries.push_back(entry.path().filename().string());
+    }
+
+    std::sort(entries.begin(), entries.end());
+    std::ofstream output(base_path_ / "repo_inventory.txt");
+    for (const auto& name : entries) {
+      output << name << '\n';
+    }
+
+    AppendLine(base_path_ / "status.log",
+               Timestamp() + " captured " + std::to_string(entries.size()) +
+                   " repo entries");
+    return "captured repo inventory";
+  }
+
+  std::string CreateWallet(double opening_balance) {
+    if (!ready()) {
+      return "workspace not ready";
+    }
+
+    if (!wallet_created_) {
+      wallet_secret_ = RandomHex(32);
+      wallet_address_ = "wallet_" + RandomHex(12);
+      wallet_created_ = true;
+    }
+
+    wallet_balance_ += opening_balance;
+    WriteWallet();
+    AppendLine(base_path_ / "status.log",
+               Timestamp() + " wallet balance " + Format(wallet_balance_));
+    return "wallet ready at " + wallet_path_.string();
+  }
+
+  void BankGain(double gain) {
+    if (!wallet_created_ || gain <= 0.0) {
+      return;
+    }
+
+    wallet_balance_ += gain;
+    WriteWallet();
+    AppendLine(base_path_ / "status.log",
+               Timestamp() + " credited gain " + Format(gain));
+  }
+
+  std::string LeaveFootprint(const std::string& note) {
+    if (!ready()) {
+      return "workspace not ready";
+    }
+
+    AppendLine(base_path_ / "footprints.log", Timestamp() + " " + note);
+    return "footprint recorded";
+  }
+
+ private:
+  static std::string Timestamp() {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t raw_time = std::chrono::system_clock::to_time_t(now);
+    std::tm utc_time{};
+#if defined(_WIN32)
+    gmtime_s(&utc_time, &raw_time);
+#else
+    gmtime_r(&raw_time, &utc_time);
+#endif
+
+    std::ostringstream stream;
+    stream << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
+    return stream.str();
+  }
+
+  static std::string RandomHex(std::size_t bytes) {
+    static std::random_device device;
+    static std::mt19937 engine(device());
+    static std::uniform_int_distribution<int> dist(0, 255);
+
+    std::ostringstream stream;
+    stream << std::hex << std::setfill('0');
+    for (std::size_t i = 0; i < bytes; ++i) {
+      stream << std::setw(2) << dist(engine);
+    }
+    return stream.str();
+  }
+
+  static std::string Format(double value) {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(2) << value;
+    return stream.str();
+  }
+
+  static void AppendLine(const fs::path& path, const std::string& line) {
+    std::ofstream output(path, std::ios::app);
+    output << line << '\n';
+  }
+
+  void WriteWallet() const {
+    std::ofstream output(wallet_path_);
+    output << "mode=self-custody\n";
+    output << "network=local\n";
+    output << "address=" << wallet_address_ << '\n';
+    output << "secret=" << wallet_secret_ << '\n';
+    output << "balance=" << Format(wallet_balance_) << '\n';
+  }
+
+  fs::path repo_root_;
+  fs::path base_path_;
+  fs::path wallet_path_;
+  bool wallet_created_ = false;
+  double wallet_balance_ = 0.0;
+  std::string wallet_address_;
+  std::string wallet_secret_;
 };
 
 class Agent {
  public:
   Agent()
-      : skills_({{"automation", 0.45},
-                 {"debugging", 0.55},
-                 {"design", 0.35},
-                 {"docs", 0.40}}) {}
+      : skills_({{"filesystem", 0.62}, {"planning", 0.54}, {"wallet", 0.38}}) {}
 
-  Target* ChooseTarget(std::vector<Target>& targets) {
-    Target* best = nullptr;
+  Objective* ChooseObjective(std::vector<Objective>& objectives) {
+    Objective* best = nullptr;
     double best_score = -1.0;
 
-    for (auto& target : targets) {
-      if (target.completed) {
+    for (auto& objective : objectives) {
+      if (objective.completed) {
         continue;
       }
 
-      const double skill = skills_[target.domain];
-      const double curiosity_bonus = target.attempts == 0 ? 0.15 : 0.0;
-      const double persistence_bonus = target.attempts * 0.08;
-      const double score = (target.impact * 1.2) + skill + curiosity_bonus +
-                           persistence_bonus - target.difficulty;
+      const double skill = skills_[objective.domain];
+      const double curiosity_bonus = objective.attempts == 0 ? 0.14 : 0.0;
+      const double persistence_bonus = objective.attempts * 0.10;
+      const double score = (objective.impact * 1.25) + skill + curiosity_bonus +
+                           persistence_bonus - objective.difficulty;
 
       if (score > best_score) {
         best_score = score;
-        best = &target;
+        best = &objective;
       }
     }
 
     return best;
   }
 
-  bool Work(Target& target) {
-    ++target.attempts;
-    const double readiness = skills_[target.domain] + (target.attempts - 1) * 0.18;
-    const bool success = readiness >= target.difficulty;
+  bool Execute(Objective& objective, Workspace& workspace) {
+    ++objective.attempts;
+
+    std::string detail;
+    bool success = false;
+
+    if (objective.kind != ActionKind::kPrepareWorkspace && !workspace.ready()) {
+      detail = "workspace missing";
+    } else {
+      const double readiness =
+          skills_[objective.domain] + (objective.attempts - 1) * 0.18;
+      if (readiness < objective.difficulty) {
+        detail = "judgment improved after a miss";
+      } else {
+        success = Perform(objective, workspace, detail);
+      }
+    }
 
     if (success) {
-      target.completed = true;
-      skills_[target.domain] = std::min(1.0, skills_[target.domain] + 0.12);
-      footprints_.push_back("👣 " + target.name);
+      objective.completed = true;
+      skills_[objective.domain] =
+          std::min(1.0, skills_[objective.domain] + 0.11);
+      footprints_.push_back("👣 " + objective.name);
       Trim(footprints_);
+      if (objective.reward > 0.0) {
+        unbanked_gains_ += objective.reward;
+        workspace.BankGain(unbanked_gains_);
+        if (workspace.wallet_created()) {
+          unbanked_gains_ = 0.0;
+        }
+      }
     } else {
-      skills_[target.domain] = std::min(1.0, skills_[target.domain] + 0.22);
+      skills_[objective.domain] =
+          std::min(1.0, skills_[objective.domain] + 0.20);
       std::ostringstream lesson;
-      lesson << "missed " << target.name << ", raised " << target.domain
-             << " skill to " << Format(skills_[target.domain]);
+      lesson << "missed " << objective.name << ", " << detail << ", "
+             << objective.domain << " skill " << Format(skills_[objective.domain]);
       lessons_.push_back(lesson.str());
       Trim(lessons_);
     }
 
+    last_detail_ = detail;
     return success;
   }
 
-  void PrintStep(const Target& target, bool success) const {
-    std::cout << "- chose: " << target.name << " [" << target.domain << "] -> "
-              << (success ? "progress made" : "stumbled, learned, retry later")
-              << '\n';
+  void PrintStep(const Objective& objective, bool success) const {
+    std::cout << "- chose: " << objective.name << " [" << objective.domain << "] -> "
+              << (success ? "completed live action" : "stumbled, learned, retry later")
+              << " (" << last_detail_ << ")\n";
   }
 
-  void PrintSummary(const std::vector<Target>& targets) const {
-    const auto completed = std::count_if(targets.begin(), targets.end(),
-                                         [](const Target& target) {
-                                           return target.completed;
-                                         });
+  void PrintSummary(const std::vector<Objective>& objectives,
+                    const Workspace& workspace) const {
+    const auto completed = std::count_if(
+        objectives.begin(), objectives.end(),
+        [](const Objective& objective) { return objective.completed; });
 
     std::cout << "\nsummary\n";
-    std::cout << "completed " << completed << " of " << targets.size()
-              << " targets\n";
+    std::cout << "completed " << completed << " of " << objectives.size()
+              << " objectives\n";
+    std::cout << "workspace: " << workspace.base_path() << '\n';
 
     if (!lessons_.empty()) {
       std::cout << "recent lessons\n";
       for (const auto& lesson : lessons_) {
         std::cout << "  - " << lesson << '\n';
       }
+    }
+
+    if (workspace.wallet_created()) {
+      std::cout << "wallet: " << workspace.wallet_path() << '\n';
+      std::cout << "wallet balance: " << Format(workspace.balance()) << '\n';
+    } else if (unbanked_gains_ > 0.0) {
+      std::cout << "unbanked gains: " << Format(unbanked_gains_) << '\n';
     }
 
     if (!footprints_.empty()) {
@@ -103,44 +284,80 @@ class Agent {
  private:
   template <typename T>
   void Trim(std::vector<T>& entries) const {
-    constexpr std::size_t kMaxEntries = 4;
+    constexpr std::size_t kMaxEntries = 5;
     if (entries.size() > kMaxEntries) {
       entries.erase(entries.begin(), entries.begin() + (entries.size() - kMaxEntries));
     }
   }
 
-  std::string Format(double value) const {
+  static std::string Format(double value) {
     std::ostringstream stream;
     stream << std::fixed << std::setprecision(2) << value;
     return stream.str();
   }
 
+  bool Perform(const Objective& objective, Workspace& workspace,
+               std::string& detail) {
+    switch (objective.kind) {
+      case ActionKind::kPrepareWorkspace:
+        detail = workspace.PrepareWorkspace();
+        return true;
+      case ActionKind::kCaptureInventory:
+        detail = workspace.CaptureInventory();
+        return detail != "workspace not ready";
+      case ActionKind::kCreateWallet:
+        detail = workspace.CreateWallet(unbanked_gains_);
+        if (workspace.wallet_created()) {
+          unbanked_gains_ = 0.0;
+        }
+        return detail != "workspace not ready";
+      case ActionKind::kLeaveFootprint:
+        detail = workspace.LeaveFootprint("completed " + objective.name);
+        return detail != "workspace not ready";
+    }
+
+    detail = "unknown objective";
+    return false;
+  }
+
   std::unordered_map<std::string, double> skills_;
   std::vector<std::string> lessons_;
   std::vector<std::string> footprints_;
+  double unbanked_gains_ = 0.0;
+  std::string last_detail_;
 };
 
-int main() {
-  std::vector<Target> targets = {
-      {"Stabilize login flow", "debugging", 0.78, 0.95},
-      {"Tighten deploy script", "automation", 0.72, 0.70},
-      {"Clarify onboarding guide", "docs", 0.58, 0.62},
-      {"Shape plugin roadmap", "design", 0.68, 0.80},
+int main(int argc, char* argv[]) {
+  const fs::path repo_root =
+      argc > 1 ? fs::path(argv[1]) : fs::current_path();
+
+  std::vector<Objective> objectives = {
+      {"Prepare local workspace", "planning", ActionKind::kPrepareWorkspace,
+       0.45, 0.95, 0.00},
+      {"Capture repository inventory", "filesystem",
+       ActionKind::kCaptureInventory, 0.78, 0.88, 1.40},
+      {"Create self-custody wallet", "wallet", ActionKind::kCreateWallet,
+       0.76, 0.84, 0.00},
+      {"Leave light operational footprint", "filesystem",
+       ActionKind::kLeaveFootprint, 0.73, 0.80, 0.45},
   };
 
+  Workspace workspace(repo_root);
   Agent agent;
 
-  std::cout << "agent starts small, chooses its own work, learns, and leaves light footprints\n";
+  std::cout << "agent operates on the most efficient local action it can execute live\n";
+  std::cout << "repo root: " << repo_root << "\n\n";
+
   for (int step = 0; step < 12; ++step) {
-    Target* target = agent.ChooseTarget(targets);
-    if (target == nullptr) {
+    Objective* objective = agent.ChooseObjective(objectives);
+    if (objective == nullptr) {
       break;
     }
 
-    const bool success = agent.Work(*target);
-    agent.PrintStep(*target, success);
+    const bool success = agent.Execute(*objective, workspace);
+    agent.PrintStep(*objective, success);
   }
 
-  agent.PrintSummary(targets);
+  agent.PrintSummary(objectives, workspace);
   return 0;
 }

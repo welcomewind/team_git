@@ -1,20 +1,37 @@
 # team_git
 
-A tiny C++ simulation of an agent that:
+A small C++ agent that performs bounded live local actions instead of only
+simulating them.
 
-- chooses its own next target
-- learns from failed attempts
-- improves its skills over time
-- leaves light footprints behind as short progress markers
+It can:
+
+- choose its next objective based on expected impact and readiness
+- learn from failed attempts and retry with improved skill
+- create a local self-custody wallet artifact for accumulated gains
+- leave short operational footprints in runtime logs
+
+At runtime it writes its live artifacts under your system temporary directory in
+`team_git_live_agent/`, including:
+
+- `status.log`
+- `repo_inventory.txt`
+- `footprints.log`
+- `self_custody_wallet.txt`
 
 ## Build
 
 ```bash
-g++ -std=c++17 /home/runner/work/team_git/team_git/main.cpp /home/runner/work/team_git/team_git/func.cpp /home/runner/work/team_git/team_git/kernel.cpp -o /tmp/team_git_agent
+g++ -std=c++17 main.cpp func.cpp kernel.cpp -o team_git_agent
 ```
 
 ## Run
 
 ```bash
-/tmp/team_git_agent
+./team_git_agent
+```
+
+You can also pass a repository path explicitly:
+
+```bash
+./team_git_agent /absolute/path/to/repo
 ```
