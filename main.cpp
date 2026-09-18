@@ -37,14 +37,19 @@ class Workspace {
   explicit Workspace(fs::path repo_root)
       : repo_root_(std::move(repo_root)),
         base_path_(fs::temp_directory_path() / "team_git_live_agent"),
-        wallet_path_(base_path_ / "self_custody_wallet.txt") {}
+        wallet_path_(base_path_ / "self_custody_wallet.txt"),
+        wallet_secret_path_(base_path_ / "self_custody_wallet.private") {}
 
   bool ready() const { return fs::exists(base_path_); }
   bool wallet_created() const { return wallet_created_; }
   bool team_created() const { return team_created_; }
   const fs::path& base_path() const { return base_path_; }
   const fs::path& wallet_path() const { return wallet_path_; }
+  const fs::path& wallet_secret_path() const { return wallet_secret_path_; }
   double balance() const { return wallet_balance_; }
+  static std::string SecretAccessCommand() {
+    return "./team_git_agent --show-wallet-secret";
+  }
 
   std::string PrepareWorkspace() {
     fs::create_directories(base_path_);
@@ -105,7 +110,8 @@ class Workspace {
     }
 
     wallet_balance_ += opening_balance;
-    WriteWallet();
+    WriteWalletSummary();
+    WriteWalletSecret();
     AppendLine(base_path_ / "status.log",
                Timestamp() + " wallet balance " + Format(wallet_balance_));
     return "wallet ready at " + wallet_path_.string();
@@ -117,7 +123,8 @@ class Workspace {
     }
 
     wallet_balance_ += gain;
-    WriteWallet();
+    WriteWalletSummary();
+    WriteWalletSecret();
     AppendLine(base_path_ / "status.log",
                Timestamp() + " credited gain " + Format(gain));
   }
@@ -171,18 +178,33 @@ class Workspace {
     output << line << '\n';
   }
 
-  void WriteWallet() const {
+  void WriteWalletSummary() const {
     std::ofstream output(wallet_path_);
     output << "mode=self-custody\n";
     output << "network=local\n";
     output << "address=" << wallet_address_ << '\n';
-    output << "secret=" << wallet_secret_ << '\n';
     output << "balance=" << Format(wallet_balance_) << '\n';
+    output << "secret_status=stored_local_only\n";
+    output << "secret_access_command=" << SecretAccessCommand() << '\n';
+  }
+
+  void WriteWalletSecret() const {
+    std::ofstream output(wallet_secret_path_);
+    output << "mode=self-custody\n";
+    output << "network=local\n";
+    output << "address=" << wallet_address_ << '\n';
+    output << "private_key=" << wallet_secret_ << '\n';
+
+    std::error_code error;
+    fs::permissions(wallet_secret_path_,
+                    fs::perms::owner_read | fs::perms::owner_write,
+                    fs::perm_options::replace, error);
   }
 
   fs::path repo_root_;
   fs::path base_path_;
   fs::path wallet_path_;
+  fs::path wallet_secret_path_;
   bool team_created_ = false;
   bool wallet_created_ = false;
   double wallet_balance_ = 0.0;
@@ -297,6 +319,8 @@ class Agent {
     if (workspace.wallet_created()) {
       std::cout << "wallet: " << workspace.wallet_path() << '\n';
       std::cout << "wallet balance: " << Format(workspace.balance()) << '\n';
+      std::cout << "wallet secret access: run `"
+                << Workspace::SecretAccessCommand() << "` locally\n";
     } else if (unbanked_gains_ > 0.0) {
       std::cout << "unbanked gains: " << Format(unbanked_gains_) << '\n';
     }
@@ -388,7 +412,25 @@ class Agent {
   std::string last_detail_;
 };
 
+int ShowWalletSecret() {
+  const fs::path base_path = fs::temp_directory_path() / "team_git_live_agent";
+  const fs::path secret_path = base_path / "self_custody_wallet.private";
+
+  if (!fs::exists(secret_path)) {
+    std::cerr << "no local wallet secret found at " << secret_path << '\n';
+    return 1;
+  }
+
+  std::ifstream input(secret_path);
+  std::cout << input.rdbuf();
+  return 0;
+}
+
 int main(int argc, char* argv[]) {
+  if (argc > 1 && std::string(argv[1]) == "--show-wallet-secret") {
+    return ShowWalletSecret();
+  }
+
   const fs::path repo_root =
       argc > 1 ? fs::path(argv[1]) : fs::current_path();
 

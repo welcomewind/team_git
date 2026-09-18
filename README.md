@@ -20,6 +20,10 @@ At runtime it writes its live artifacts under your system temporary directory in
 - `footprints.log`
 - `self_custody_wallet.txt`
 
+The public wallet summary does not expose the private key. Sensitive wallet
+material is kept only in the local temp workspace and is not printed during a
+normal run.
+
 ## Build
 
 ```bash
@@ -36,4 +40,11 @@ You can also pass a repository path explicitly:
 
 ```bash
 ./team_git_agent /absolute/path/to/repo
+```
+
+To explicitly view the local-only wallet secret on the machine where it was
+generated:
+
+```bash
+./team_git_agent --show-wallet-secret
 ```
